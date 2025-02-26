@@ -23,6 +23,10 @@ package org.luaj.vm2;
 
 
 import java.lang.ref.WeakReference;
+/* DAN200 START */
+import java.util.Enumeration;
+import java.util.Vector;
+/* DAN200 END */
 
 /** 
  * Subclass of {@link LuaValue} that implements 
@@ -106,6 +110,10 @@ public class LuaThread extends LuaValue {
 
 	/** Error message handler for this thread, if any.  */
 	public LuaValue errorfunc;
+
+	/* DAN200 START */
+	private Vector children = new Vector();
+	/* DAN200 END */
 	
 	/** Private constructor for main thread only */
 	public LuaThread(Globals globals) {
@@ -164,6 +172,32 @@ public class LuaThread extends LuaValue {
 		return s.lua_resume(this, args);
 	}
 
+	/* DAN200 START */
+	public void addChild( LuaThread thread ) {
+		this.children.addElement( new WeakReference( thread ) );
+	}
+
+	public Varargs abandon() {
+		if( this.state.status > STATUS_SUSPENDED ) {
+			return LuaValue.varargsOf( LuaValue.FALSE, LuaValue.valueOf( "cannot abandon " + STATUS_NAMES[this.state.status] + " coroutine" ) );
+		} else {
+			this.state.lua_abandon( this );
+
+			Enumeration it = this.children.elements();
+			while( it.hasMoreElements() ) {
+				WeakReference ref = (WeakReference)it.nextElement();
+				LuaThread thread = (LuaThread)ref.get();
+				if(thread != null && !thread.getStatus().equals("dead")) {
+					thread.abandon();
+				}
+			}
+
+			this.children.removeAllElements();
+			return LuaValue.varargsOf( new LuaValue[] { LuaValue.TRUE } );
+		}
+	}
+	/* DAN200 END */
+
 	public static class State implements Runnable {
 		private final Globals globals;
 		final WeakReference lua_thread;
@@ -184,6 +218,9 @@ public class LuaThread extends LuaValue {
 		public int bytecodes;
 		
 		public int status = LuaThread.STATUS_INITIAL;
+		/* DAN200 START */
+		boolean abandoned = false;
+		/* DAN200 END */
 
 		State(Globals globals, LuaThread lua_thread, LuaValue function) {
 			this.globals = globals;
@@ -241,7 +278,10 @@ public class LuaThread extends LuaValue {
 				this.notify();
 				do {
 					this.wait(thread_orphan_check_interval);
-					if (this.lua_thread.get() == null) {
+					/* DAN200 START */
+					//if (this.lua_thread.get() == null) {
+					if( this.abandoned || this.lua_thread.get() == null ) {
+					/* DAN200 END */
 						this.status = STATUS_DEAD;
 						throw new OrphanedThread();
 					}
@@ -255,6 +295,30 @@ public class LuaThread extends LuaValue {
 				this.result = LuaValue.NONE;
 			}
 		}
+
+		/* DAN200 START */
+		synchronized void lua_abandon(LuaThread thread) {
+			LuaThread current = globals.running;
+
+			try {
+				current.state.status = STATUS_NORMAL;
+				this.abandoned = true;
+				if(this.status == STATUS_INITIAL) {
+					this.status = STATUS_DEAD;
+				} else {
+					this.notify();
+					this.wait();
+				}
+			} catch (InterruptedException var7) {
+				this.status = STATUS_DEAD;
+			} finally {
+				current.state.status = STATUS_RUNNING;
+				this.args = LuaValue.NONE;
+				this.result = LuaValue.NONE;
+				this.error = null;
+			}
+		}
+		/* DAN200 END */
 	}
 		
 }
